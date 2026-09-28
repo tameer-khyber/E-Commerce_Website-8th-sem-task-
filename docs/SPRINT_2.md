@@ -9,9 +9,9 @@ This sprint delivers a relational catalog database and an authenticated admin AP
 
 **Deferred to later sprints:** a dynamic specification editor, an image-upload pipeline, public catalog search, publish-workflow automation, payments, shipping, and the shopper checkout flow. Where the data model needs a placeholder for these (e.g. `assets.storage_key_or_url`, `products.status`), it exists as a field only — no working feature is claimed.
 
-### Requirement Coverage (What We Implemented)
+### Requirement Coverage
 
-| ID | Capability | How We Satisfied It |
+| ID | Capability | How I Satisfied It |
 |---|---|---|
 | CAT01 | Categories | `categories` table with a self-referencing `parent_id`, a `UNIQUE` `slug`, and an `is_active` flag; cycle prevention (a category can't become its own ancestor) is checked in the service layer before insert/update |
 | CAT02 | Product identity | `products` table with `name`, `UNIQUE slug`, `description`, `status`, and `category_id` FK |
@@ -22,7 +22,7 @@ This sprint delivers a relational catalog database and an authenticated admin AP
 
 ---
 
-## 2. Link to Sprint 1 Decisions (Reused / Changed)
+## 2. Link to Sprint 1 Decisions
 
 This sprint extends — rather than replaces — the architecture defined in [`docs/SPRINT_1.md`](./SPRINT_1.md). That document remains the source of truth for the target audience, MVP scope, and tech-stack justification; none of it is re-argued here.
 
