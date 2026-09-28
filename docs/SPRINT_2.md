@@ -1,10 +1,6 @@
 # Sprint 2: Catalog Data Foundation
 ### Project: S&P Clovers — Online Store for Shirts & Pants
 
-**Course:** E-Commerce | **Department:** Computer Science / Artificial Intelligence | **Institute of Mathematics & Computer Science, University of Sindh, Jamshoro**
-
----
-
 ## 1. Sprint Goal and Scope Boundary
 
 This sprint delivers a relational catalog database and an authenticated admin API that reliably store categories, products, variants, and SKUs — preserving identity, relationships, pricing, and inventory accuracy so that Sprint 3's storefront, cart, and checkout can build on top of it without re-modeling the data.
