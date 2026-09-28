@@ -127,7 +127,7 @@ erDiagram
 
     CART {
         int id PK
-        int user_id FK UK
+        int user_id FK, UK
     }
 
     CART_ITEMS {
