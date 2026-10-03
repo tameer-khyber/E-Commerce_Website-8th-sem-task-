@@ -14,6 +14,17 @@ function badRequest(res, message) {
   return res.status(400).json({ error: message });
 }
 
+/**
+ * Parse a price value that may arrive as a string ("1299.00") or a number (1299).
+ * Returns the parsed float, or NaN if the value cannot be interpreted.
+ * The spec requires prices to be sent as strings, but we accept numbers too for robustness.
+ */
+function parsePrice(v) {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.trim() !== '') return parseFloat(v);
+  return NaN;
+}
+
 /** True only for a non-negative finite number (used for prices) */
 function isNonNegativeNumber(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0;
@@ -22,6 +33,14 @@ function isNonNegativeNumber(v) {
 /** True only for a non-negative integer (used for stock) */
 function isNonNegativeInt(v) {
   return Number.isInteger(v) && v >= 0;
+}
+
+/**
+ * Validate slug format: lowercase letters, digits, hyphens only.
+ * e.g. 'slim-fit-oxford-shirt' ✓  'Slim Fit' ✗
+ */
+function isValidSlug(slug) {
+  return typeof slug === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
 }
 
 /** Validate the specifications JSONB: only fabric, fit, care_instructions (strings) */
@@ -80,6 +99,12 @@ app.post('/api/v1/admin/categories', requireAdmin, async (req, res, next) => {
   try {
     const { name, slug, parent_id } = req.body || {};
     if (!name || !slug) return badRequest(res, 'name and slug are required');
+    if (typeof name !== 'string' || !name.trim()) return badRequest(res, 'name must be a non-empty string');
+
+    // Slug must be lowercase-hyphenated (e.g. 'shirts', 'casual-wear')
+    if (!isValidSlug(slug)) {
+      return badRequest(res, 'slug must be lowercase letters, digits, and hyphens only (e.g. \'shirts\', \'casual-wear\')');
+    }
 
     if (parent_id !== undefined && parent_id !== null) {
       if (!Number.isInteger(parent_id)) return badRequest(res, 'parent_id must be an integer');
@@ -90,7 +115,7 @@ app.post('/api/v1/admin/categories', requireAdmin, async (req, res, next) => {
     const pid = parent_id ?? null;
     const r = await pool.query(
       'INSERT INTO categories(name, slug, parent_id) VALUES($1, $2, $3) RETURNING *',
-      [name, slug, pid]
+      [name.trim(), slug, pid]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -200,6 +225,12 @@ app.post('/api/v1/admin/products', requireAdmin, async (req, res, next) => {
     if (!name || !slug || !Number.isInteger(category_id)) {
       return badRequest(res, 'name, slug, and category_id (integer) are required');
     }
+    if (typeof name !== 'string' || !name.trim()) return badRequest(res, 'name must be a non-empty string');
+
+    // Slug must be lowercase-hyphenated (e.g. 'slim-fit-oxford-shirt')
+    if (!isValidSlug(slug)) {
+      return badRequest(res, 'slug must be lowercase letters, digits, and hyphens only (e.g. \'slim-fit-oxford-shirt\')');
+    }
     if (!['draft', 'published', 'archived'].includes(status)) {
       return badRequest(res, 'status must be draft, published, or archived');
     }
@@ -214,11 +245,17 @@ app.post('/api/v1/admin/products', requireAdmin, async (req, res, next) => {
       return badRequest(res, 'an active category is required');
     }
 
+    // A product being created as 'published' must have no missing active SKUs logic —
+    // since this is a fresh insert with no SKUs yet, block direct publish on creation.
+    if (status === 'published') {
+      return badRequest(res, 'a new product cannot be created with status \'published\' — create it as \'draft\' first, add at least one active SKU, then publish via PATCH');
+    }
+
     const r = await pool.query(
       `INSERT INTO products(name, slug, description, status, category_id, specifications)
        VALUES($1, $2, $3, $4, $5, $6)
        RETURNING id, name, slug, category_id, status, created_at`,
-      [name, slug, description, status, category_id, JSON.stringify(specifications)]
+      [name.trim(), slug, description, status, category_id, JSON.stringify(specifications)]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -246,6 +283,8 @@ app.get('/api/v1/admin/products', requireAdmin, async (_req, res, next) => {
 /**
  * PATCH /api/v1/admin/products/:id
  * Body: { name?, slug?, description?, status?, category_id?, specifications? }
+ * Business rule: status cannot be set to 'published' unless the product has
+ * at least one active SKU (enforces S&P Clovers catalog integrity).
  */
 app.patch('/api/v1/admin/products/:id', requireAdmin, async (req, res, next) => {
   try {
@@ -258,6 +297,22 @@ app.patch('/api/v1/admin/products/:id', requireAdmin, async (req, res, next) => 
     if (b.status && !['draft', 'published', 'archived'].includes(b.status)) {
       return badRequest(res, 'status must be draft, published, or archived');
     }
+
+    // S&P Clovers business rule: a product can only be published if it has
+    // at least one active SKU (i.e. at least one size is available for sale)
+    if (b.status === 'published' && old.status !== 'published') {
+      const skuCheck = await pool.query(
+        `SELECT COUNT(*) AS cnt
+           FROM skus s
+           JOIN variants v ON v.id = s.variant_id
+          WHERE v.product_id = $1 AND s.is_active = true`,
+        [id]
+      );
+      if (parseInt(skuCheck.rows[0].cnt, 10) === 0) {
+        return badRequest(res, 'cannot publish a product with no active SKUs — add at least one size/color SKU first');
+      }
+    }
+
     if (b.specifications !== undefined && !validateSpecifications(b.specifications)) {
       return res.status(422).json({
         error: 'specifications must be an object with only fabric, fit, and care_instructions string keys',
@@ -266,6 +321,9 @@ app.patch('/api/v1/admin/products/:id', requireAdmin, async (req, res, next) => 
     if (b.category_id !== undefined) {
       const cat = await pool.query('SELECT is_active FROM categories WHERE id = $1', [b.category_id]);
       if (!cat.rowCount || !cat.rows[0].is_active) return badRequest(res, 'an active category is required');
+    }
+    if (b.slug !== undefined && !isValidSlug(b.slug)) {
+      return badRequest(res, 'slug must be lowercase letters, digits, and hyphens only');
     }
 
     const r = await pool.query(
@@ -309,9 +367,49 @@ app.delete('/api/v1/admin/products/:id', requireAdmin, async (req, res, next) =>
 // ─── Admin — Variants (Color) ─────────────────────────────────────────────────
 
 /**
+ * GET /api/v1/admin/products/:id/variants
+ * Returns all color variants (with their SKUs) for a given product.
+ * Each variant includes its list of SKUs so the admin can see the full
+ * color → size → price/stock breakdown for S&P Clovers garments.
+ */
+app.get('/api/v1/admin/products/:id/variants', requireAdmin, async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    const product = await pool.query('SELECT id FROM products WHERE id = $1', [productId]);
+    if (!product.rowCount) return res.status(404).json({ error: 'product not found' });
+
+    // Fetch variants with their SKUs nested
+    const variants = await pool.query(
+      `SELECT v.id, v.color, v.created_at,
+              json_agg(
+                json_build_object(
+                  'id', s.id,
+                  'size', s.size,
+                  'sku_code', s.sku_code,
+                  'price', s.price::text,
+                  'stock_quantity', s.stock_quantity,
+                  'is_active', s.is_active
+                ) ORDER BY s.size
+              ) FILTER (WHERE s.id IS NOT NULL) AS skus
+         FROM variants v
+         LEFT JOIN skus s ON s.variant_id = v.id
+        WHERE v.product_id = $1
+        GROUP BY v.id
+        ORDER BY v.color`,
+      [productId]
+    );
+    res.json(variants.rows.map(row => ({
+      ...row,
+      skus: row.skus ?? [],
+    })));
+  } catch (err) { next(err); }
+});
+
+/**
  * POST /api/v1/admin/products/:id/variants
  * Body: { color }
- * Adds a color variant to a product
+ * Adds a color variant to a product.
+ * Valid S&P Clovers colors: e.g. White, Navy Blue, Khaki, Indigo, Charcoal.
  */
 app.post('/api/v1/admin/products/:id/variants', requireAdmin, async (req, res, next) => {
   try {
@@ -346,12 +444,13 @@ app.post('/api/v1/admin/products/:id/variants', requireAdmin, async (req, res, n
 app.post('/api/v1/admin/products/:id/skus', requireAdmin, async (req, res, next) => {
   try {
     const productId = Number(req.params.id);
-    const { variant_id, size, sku_code, price, stock_quantity = 0, is_active = true } = req.body || {};
+    const { variant_id, size, sku_code, stock_quantity = 0, is_active = true } = req.body || {};
+    const price = parsePrice(req.body?.price);
 
     if (!Number.isInteger(variant_id))         return badRequest(res, 'variant_id must be an integer');
     if (!size || typeof size !== 'string')      return badRequest(res, 'size is required');
     if (!sku_code || typeof sku_code !== 'string') return badRequest(res, 'sku_code is required');
-    if (!isNonNegativeNumber(price))            return badRequest(res, 'price must be a non-negative number');
+    if (!isNonNegativeNumber(price))            return badRequest(res, 'price must be a non-negative number (e.g. "1299.00" or 1299)');
     if (!isNonNegativeInt(stock_quantity))      return badRequest(res, 'stock_quantity must be a non-negative integer');
 
     // Ensure the variant actually belongs to the product in the URL
@@ -378,6 +477,30 @@ app.post('/api/v1/admin/products/:id/skus', requireAdmin, async (req, res, next)
 });
 
 /**
+ * GET /api/v1/admin/skus/:id
+ * Returns a single SKU by ID with its variant and product context.
+ * Useful for the admin dashboard to inspect a specific S&P Clovers size/color unit.
+ */
+app.get('/api/v1/admin/skus/:id', requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT s.id, s.sku_code, s.size, s.price::text AS price,
+              s.stock_quantity, s.is_active, s.created_at, s.updated_at,
+              v.color, v.product_id,
+              p.name AS product_name, p.slug AS product_slug
+         FROM skus s
+         JOIN variants v ON v.id = s.variant_id
+         JOIN products p ON p.id = v.product_id
+        WHERE s.id = $1`,
+      [id]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'SKU not found' });
+    res.json(r.rows[0]);
+  } catch (err) { next(err); }
+});
+
+/**
  * PATCH /api/v1/admin/skus/:id
  * Body: { price?, stock_quantity?, is_active? }
  */
@@ -388,7 +511,8 @@ app.patch('/api/v1/admin/skus/:id', requireAdmin, async (req, res, next) => {
     if (!old) return res.status(404).json({ error: 'SKU not found' });
 
     const b = req.body || {};
-    if (b.price          !== undefined && !isNonNegativeNumber(b.price))    return badRequest(res, 'price must be non-negative');
+    const parsedPrice = b.price !== undefined ? parsePrice(b.price) : undefined;
+    if (parsedPrice !== undefined && !isNonNegativeNumber(parsedPrice)) return badRequest(res, 'price must be non-negative (e.g. "1299.00" or 1299)');
     if (b.stock_quantity !== undefined && !isNonNegativeInt(b.stock_quantity)) return badRequest(res, 'stock_quantity cannot be negative');
 
     const r = await pool.query(
@@ -397,7 +521,7 @@ app.patch('/api/v1/admin/skus/:id', requireAdmin, async (req, res, next) => {
        WHERE id = $4
        RETURNING id, variant_id, size, sku_code, price::text AS price, stock_quantity, is_active, updated_at`,
       [
-        b.price          ?? old.price,
+        parsedPrice !== undefined ? parsedPrice : old.price,
         b.stock_quantity ?? old.stock_quantity,
         b.is_active      ?? old.is_active,
         id,

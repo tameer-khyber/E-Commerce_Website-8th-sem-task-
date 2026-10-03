@@ -84,12 +84,14 @@ Response: `{"token":"<JWT>"}` — use as `Authorization: Bearer <token>` on all 
 | GET | `/api/v1/admin/categories` | List all categories |
 | PATCH | `/api/v1/admin/categories/:id` | Update / reactivate category |
 | DELETE | `/api/v1/admin/categories/:id` | Soft-deactivate category |
-| POST | `/api/v1/admin/products` | Create product (with specifications) |
+| POST | `/api/v1/admin/products` | Create draft product (with specifications) |
 | GET | `/api/v1/admin/products` | List products with category name |
-| PATCH | `/api/v1/admin/products/:id` | Update product fields or status |
+| PATCH | `/api/v1/admin/products/:id` | Update product fields or status (publish requires active SKU) |
 | DELETE | `/api/v1/admin/products/:id` | Archive product |
+| GET | `/api/v1/admin/products/:id/variants` | List color variants + SKUs for a product |
 | POST | `/api/v1/admin/products/:id/variants` | Add color variant |
 | POST | `/api/v1/admin/products/:id/skus` | Add size SKU to a variant |
+| GET | `/api/v1/admin/skus/:id` | Get single SKU with product/color context |
 | PATCH | `/api/v1/admin/skus/:id` | Update SKU price, stock, or active |
 | DELETE | `/api/v1/admin/skus/:id` | Soft-deactivate SKU |
 
